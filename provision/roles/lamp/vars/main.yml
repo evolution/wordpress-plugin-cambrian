@@ -1,0 +1,25 @@
+---
+lamp_packages:
+  - unzip
+  - apache2
+  - apache2-mpm-prefork
+  - apache2-utils
+  - libapr1
+  - libaprutil1
+  - libdbd-mysql-perl
+  - libdbi-perl
+  - libnet-daemon-perl
+  - libplrpc-perl
+  - libpq5
+  - mysql-client-5.5
+  - mysql-common
+  - mysql-server
+  - mysql-server-5.5
+  - python-mysqldb
+
+php55_packages:
+  - apache2-data
+  - libapache2-mod-php5
+  - php5-cli
+  - php5-common
+  - php5-mysql

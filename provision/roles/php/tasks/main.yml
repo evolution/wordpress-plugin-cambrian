@@ -1,0 +1,17 @@
+---
+- name: Add ppa for PHP 5.2
+  apt_repository: repo='ppa:sergey-dryabzhinsky/php52'
+
+- name: Refresh apt cache
+  apt: update_cache=yes
+
+- name: Install PHP 5.2 packages
+  apt: name={{ item }}
+  with_items: php52_packages
+
+- name: Install PHP 5.2 zip extension
+  apt: name=php52-mod-zip
+  when: php52_zip
+
+- name: Enable PHP 5.2 apache module
+  command: a2enmod php52

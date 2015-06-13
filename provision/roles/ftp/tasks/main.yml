@@ -1,0 +1,23 @@
+---
+- name: Install vsftp daemon
+  apt: name=vsftpd
+
+- name: Switch on ftp chroot
+  lineinfile: dest=/etc/vsftpd.conf regexp='^chroot_local_user=' line='chroot_local_user=YES'
+  when: wp_ftp_chroot
+
+- name: Configure ftp daemon
+  lineinfile: dest=/etc/vsftpd.conf regexp='^{{ item.name }}=' line='{{ item.name }}={{ item.value }}'
+  with_items:
+    - { name: 'anonymous_enable', value: 'NO' }
+    - { name: 'local_enable', value: 'YES' }
+    - { name: 'write_enable', value: 'YES' }
+  notify: restart ftp
+
+- name: Set homedir permissions for chrooted ftp
+  command: chmod a-w /home/vagrant/
+  when: wp_ftp_chroot
+
+- name: Set homedir subdir permissions for chrooted ftp
+  command: chown vagrant:vagrant /home/vagrant/wordpress/
+  when: wp_ftp_chroot

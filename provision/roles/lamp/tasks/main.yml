@@ -1,0 +1,34 @@
+---
+- name: Install apache/mysql packages
+  apt: name={{ item }}
+  with_items: lamp_packages
+
+- name: Install PHP 5.5 packages
+  apt: name={{ item }}
+  with_items: php55_packages
+  when: not php52
+
+- name: Register Apache major/minor version
+  shell: "apache2 -v | grep -i apache | perl -pe 's|^.*apache/([0-9]+[.][0-9]+)[.].*$|$1|i'"
+  register: apache_version
+
+- debug: msg={{ apache_version.stdout }}
+
+- name: Create empty wordpress database
+  mysql_db: name=wordpress state=present
+
+- name: Determine default apache vhost filename
+  shell: ls -1 /etc/apache2/sites-enabled/000-default*
+  register: apache_default_vhost
+
+- name: Configure default apache virtual host
+  template: src=vhost.conf.j2 dest={{ apache_default_vhost.stdout }} owner=root group=root mode=644
+
+- name: Ensure vagrant user is member of www-data group
+  user: append=yes name=vagrant groups=www-data
+
+- name: Ensure www-data user is member of vagrant group
+  user: append=yes name=www-data groups=vagrant
+
+- name: Enable apache rewrite module
+  command: a2enmod rewrite

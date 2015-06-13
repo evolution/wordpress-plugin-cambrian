@@ -1,0 +1,14 @@
+---
+- hosts: all
+  gather_facts: yes
+  sudo: true
+
+  pre_tasks:
+    - name: Ensure apt cache is up to date
+      apt: update_cache=yes
+
+  roles:
+    - lamp
+    - { role: php, when: php52 }
+    - wordpress
+    - { role: ftp, when: wp_fsmethod_ftp }

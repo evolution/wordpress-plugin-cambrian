@@ -1,0 +1,9 @@
+---
+php52_packages:
+  - apache2.2-common
+  - php52-cli
+  - php52-dev
+  - php52-pear
+  - php52-common
+  - php52-apache2
+  - php52-mod-mysql

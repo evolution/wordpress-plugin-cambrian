@@ -1,0 +1,22 @@
+---
+- name: Download Wordpress source at specified version
+  get_url: url=https://wordpress.org/wordpress-{{wordpress_version}}.zip dest=/tmp/wordpress.zip
+
+- name: Unzip wordpress source into vagrant home directory
+  unarchive: src=/tmp/wordpress.zip dest=/home/vagrant copy=no
+
+- name: Generate wp-config
+  template: src=wp-config.php.j2 dest=/home/vagrant/wordpress/wp-config.php
+
+- name: Install cambrian plugin
+  command: cp -r /vagrant/src /home/vagrant/wordpress/wp-content/plugins/cambrian
+
+- name: Ensure wordpress source is owned by vagrant user
+  file: path=/home/vagrant/wordpress state=directory owner=vagrant group=vagrant recurse=yes
+
+- name: Ensure subdirectories of wordpress source are executable
+  command: find -L /home/vagrant/wordpress -type d -exec chmod 775 {} \; -exec chmod g+s {} \;
+
+- name: Ensure files in wordpresss source are readable
+  command: find -L /home/vagrant/wordpress -type f -exec chmod 644 {} \;
+  notify: restart apache
