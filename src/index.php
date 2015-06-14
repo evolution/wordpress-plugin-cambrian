@@ -518,19 +518,11 @@ if (!class_exists('cambrian')) {
                     RecursiveIteratorIterator::SELF_FIRST
                 );
 
-                return array_map(array(&$this, 'reduce'), $files);
+                return array_keys(iterator_to_array($files));
             }
             else {
                 return $this->_recurse($path);
             }
-        }
-
-        /**
-         * Reduce SplFileInfo objects to string path
-         * @access private
-         */
-        private function reduce($n) {
-            return $n->getPathName();
         }
 
         /**
