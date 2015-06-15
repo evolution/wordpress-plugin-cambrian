@@ -67,6 +67,12 @@ if (!class_exists('cambrian')) {
         protected $base_dir;
 
         /**
+         * Runtime values to save in the archive manifest
+         * @var array
+         */
+        protected $manifest = array();
+
+        /**
          * ZipArchive error strings
          * @var array
          */
@@ -237,11 +243,11 @@ if (!class_exists('cambrian')) {
 
             global $wp_filesystem;
 
-            // start collecting manifest info
-            $this->manifest = array(
-                'wp_filesystem_abspath' => $wp_filesystem->abspath(),
-                'const_abspath' => ABSPATH,
-            );
+            $this->addToManifest(array(
+                'wpfs_abspath'      => $wp_filesystem->abspath(),
+                'const_abspath'     => ABSPATH,
+                'cambrian_basepath' => $this->base_dir,
+            ));
 
             $base_offset = stripos($this->base_dir, $wp_filesystem->abspath());
             $this->chroot_base_dir = ($base_offset === 0) ? $this->base_dir : rtrim($wp_filesystem->abspath(), DIRECTORY_SEPARATOR);
@@ -331,23 +337,18 @@ if (!class_exists('cambrian')) {
             $dumpname = $this->tmp_dir . DIRECTORY_SEPARATOR . 'wordpress.sql';
             $dumpfile = fopen($dumpname, 'w');
 
-            foreach (array('prefix', 'base_prefix', 'blogid', 'siteid') as $prop) {
-                $this->manifest[$prop] = $wpdb->$prop;
-            }
-
-            $wpdb_methods = array(
-                array('db_version',      array()),
-                array('get_blog_prefix', array()),
-                array('tables',          array('all')),
-                array('tables',          array('blog')),
-                array('tables',          array('global')),
-                array('tables',          array('ms_global')),
-            );
-
-            foreach ($wpdb_methods as $method) {
-                $key = $method[0] . '[' . implode(',', $method[1]) . ']';
-                $this->manifest[$key] = call_user_func_array(array($wpdb, $method[0]), $method[1]);
-            }
+            $this->addToManifest(array(
+                'prefix'            => $wpdb->prefix,
+                'base_prefix'       => $wpdb->base_prefix,
+                'blogid'            => $wpdb->blogid,
+                'siteid'            => $wpdb->siteid,
+                'db_version'        => $wpdb->db_version(),
+                'get_blog_prefix'   => $wpdb->get_blog_prefix(),
+                'tables[all]'       => $wpdb->tables('all'),
+                'tables[blog]'      => $wpdb->tables('blog'),
+                'tables[global]'    => $wpdb->tables('global'),
+                'tables[ms_global]' => $wpdb->tables('ms_global'),
+            ));
 
             foreach ($wpdb->tables('all', true) as $nonprefixed_tablename => $tablename) {
                 $results = $wpdb->get_row("SHOW CREATE TABLE `{$tablename}`", ARRAY_A);
@@ -492,6 +493,14 @@ if (!class_exists('cambrian')) {
             foreach (array_reverse($dirs) as $path) {
                 rmdir($path);
             }
+        }
+
+        /**
+         * Add array of values to manifest
+         * @access private
+         */
+        private function addToManifest($values) {
+            $this->manifest = array_merge($this->manifest, $values);
         }
 
         /**
