@@ -247,6 +247,11 @@ if (!class_exists('cambrian')) {
                 'wpfs_abspath'      => $wp_filesystem->abspath(),
                 'const_abspath'     => ABSPATH,
                 'cambrian_basepath' => $this->base_dir,
+                'is_multisite'      => is_multisite(),
+                'network_home_url'  => network_home_url(),
+                'home_url'          => home_url(),
+                'network_site_url'  => network_site_url(),
+                'site_url'          => site_url(),
             ));
 
             $base_offset = stripos($this->base_dir, $wp_filesystem->abspath());
@@ -350,12 +355,18 @@ if (!class_exists('cambrian')) {
                 'tables[ms_global]' => $wpdb->tables('ms_global'),
             ));
 
-            foreach ($wpdb->tables('all', true) as $nonprefixed_tablename => $tablename) {
+            $ms_tables = $wpdb->tables('ms_global');
+
+            foreach ($wpdb->tables('all', true) as $rawname => $tablename) {
+                if (isset($ms_tables[$rawname])) {
+                    echo 'Skipping multisite table ' . $tablename . '<br>';
+                    continue;
+                }
+
                 $results = $wpdb->get_row("SHOW CREATE TABLE `{$tablename}`", ARRAY_A);
 
                 if (isset($results['Create Table'])) {
                     fwrite($dumpfile, "-- Table {$tablename}\n");
-                    fwrite($dumpfile, "-- CAMBRIAN[[/{$nonprefixed_tablename}/{$tablename}/]]\n");
                     fwrite($dumpfile, "DROP TABLE IF EXISTS `{$tablename}`;\n");
                     fwrite($dumpfile, $results['Create Table'] . ";\n\n");
 
