@@ -25,5 +25,10 @@ The archive can then be imported into a site generated with [Evolution Wordpress
 
 == Changelog ==
 
+= 0.1.1-beta =
+* Fixed implicit iterator to array conversion
+* Improved manifesting
+* Collecting multisite data
+
 = 0.1.0-beta =
 * First viable release!
