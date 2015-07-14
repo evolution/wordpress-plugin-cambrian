@@ -342,6 +342,11 @@ if (!class_exists('cambrian')) {
             $dumpname = $this->tmp_dir . DIRECTORY_SEPARATOR . 'wordpress.sql';
             $dumpfile = fopen($dumpname, 'w');
 
+            // get ALL tables, including non wordpress
+            $all_tables   = $wpdb->get_results('SHOW TABLES', ARRAY_N);
+            $blog_tables  = $wpdb->tables('blog');
+            $ms_tables    = $wpdb->tables('ms_global');
+
             $this->addToManifest(array(
                 'prefix'            => $wpdb->prefix,
                 'base_prefix'       => $wpdb->base_prefix,
@@ -349,17 +354,30 @@ if (!class_exists('cambrian')) {
                 'siteid'            => $wpdb->siteid,
                 'db_version'        => $wpdb->db_version(),
                 'get_blog_prefix'   => $wpdb->get_blog_prefix(),
-                'tables[all]'       => $wpdb->tables('all'),
-                'tables[blog]'      => $wpdb->tables('blog'),
-                'tables[global]'    => $wpdb->tables('global'),
-                'tables[ms_global]' => $wpdb->tables('ms_global'),
+                'show_tables'       => $all_tables,
+                'tables[blog]'      => $blog_tables,
+                'tables[ms_global]' => $ms_tables,
             ));
 
-            $ms_tables = $wpdb->tables('ms_global');
+            foreach ($all_tables as $tablename) {
+                $tablename = array_pop($tablename);
 
-            foreach ($wpdb->tables('all', true) as $rawname => $tablename) {
+                // get raw tablename without prefixes
+                $rawname = preg_replace('/^'.preg_quote($wpdb->base_prefix).'(?:\d+_)?/', '', $tablename);
+
+                // skip multisite tables
                 if (isset($ms_tables[$rawname])) {
-                    echo 'Skipping multisite table ' . $tablename . '<br>';
+                    if ($this->debug)
+                        echo 'Skipping multisite table <code>' . $tablename . '</code><br>';
+
+                    continue;
+                }
+
+                // skip blog tables that do not belong to the currently exporting site
+                if (isset($blog_tables[$rawname]) && strpos($tablename, $wpdb->prefix) === FALSE) {
+                    if ($this->debug)
+                        echo 'Skipping extrasite table <code>' . $tablename . '</code><br>';
+
                     continue;
                 }
 
