@@ -252,6 +252,7 @@ if (!class_exists('cambrian')) {
                 'home_url'          => home_url(),
                 'network_site_url'  => network_site_url(),
                 'site_url'          => site_url(),
+                'get_plugins'       => get_plugins(),
             ));
 
             $base_offset = stripos($this->base_dir, $wp_filesystem->abspath());
@@ -462,13 +463,14 @@ if (!class_exists('cambrian')) {
                 $zip->create($zipname);
             }
 
+            $plugin_pattern = $this->findInactivePlugins();
+
             $basepath = $this->tmp_dir . DIRECTORY_SEPARATOR;
 
             foreach($this->recurse($basepath) as $file){
                 $localname = preg_replace('/^' . preg_quote($basepath, '/') . '/', '', $file);
 
-                // don't need to back ourselves up!
-                if (stripos(ltrim($localname, '/'), 'plugins/cambrian') === 0) {
+                if (preg_match($plugin_pattern, $localname)) {
                     continue;
                 }
 
@@ -530,6 +532,30 @@ if (!class_exists('cambrian')) {
          */
         private function addToManifest($values) {
             $this->manifest = array_merge($this->manifest, $values);
+        }
+
+        /**
+         * Construct pattern to match inactive plugins
+         * @access private
+         */
+        private function findInactivePlugins() {
+            // skip exporting ourself, for obvious reasons
+            $inactive_plugins = array('cambrian');
+
+            foreach (get_plugins() as $plugin_name => $plugin_info) {
+                list($base) = explode(DIRECTORY_SEPARATOR, $plugin_name);
+
+                if (!is_plugin_active($plugin_name) && !is_plugin_active_for_network($plugin_name)) {
+                    $inactive_plugins[] = preg_quote($base, '/');
+
+                    if ($this->debug)
+                        echo 'Skipping inactive plugin <code>' . $base . '</code><br>';
+                }
+            }
+
+            $sep = preg_quote(DIRECTORY_SEPARATOR, '/');
+
+            return "/^{$sep}?plugins{$sep}(?:" . implode('|', $inactive_plugins) . ')/';
         }
 
         /**
