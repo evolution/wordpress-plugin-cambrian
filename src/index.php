@@ -4,7 +4,7 @@
 Plugin Name: Cambrian
 Plugin URI: https://github.com/evolution/wordpress-plugin-cambrian
 Description: Backup and export for Wordpress Evolution
-Version: 0.1.1-beta
+Version: 0.1.2-beta
 Author: Evan Kaufman
 Author URI: https://github.com/EvanK
 License: MIT
@@ -34,7 +34,7 @@ if (!class_exists('cambrian')) {
          * Current version of the plugin
          * @var string
          */
-        protected $version = '0.1.1-beta';
+        protected $version = '0.1.2-beta';
 
         /**
          * Show debug output

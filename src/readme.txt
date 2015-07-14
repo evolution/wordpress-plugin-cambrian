@@ -25,6 +25,10 @@ The archive can then be imported into a site generated with [Evolution Wordpress
 
 == Changelog ==
 
+= 0.1.2-beta =
+* Skip backing up of inactive plugins
+* Back up any non-wordpress tables in same database
+
 = 0.1.1-beta =
 * Fixed implicit iterator to array conversion
 * Improved manifesting
