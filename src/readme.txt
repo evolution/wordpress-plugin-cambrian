@@ -25,6 +25,9 @@ The archive can then be imported into a site generated with [Evolution Wordpress
 
 == Changelog ==
 
+= 0.2.0 =
+* First stable release
+
 = 0.1.2-beta =
 * Skip backing up of inactive plugins
 * Back up any non-wordpress tables in same database
