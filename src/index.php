@@ -4,7 +4,7 @@
 Plugin Name: Cambrian
 Plugin URI: https://github.com/evolution/wordpress-plugin-cambrian
 Description: Backup and export for Wordpress Evolution
-Version: 0.2.0
+Version: 0.3.0-alpha
 Author: Evan Kaufman
 Author URI: https://github.com/EvanK
 License: MIT
@@ -19,46 +19,40 @@ if (defined('WP_INSTALLING') && WP_INSTALLING)
 if (!class_exists('cambrian')) {
     class cambrian {
         /**
-         * Tag identifier used throughout the plugin
-         * @var string
+         * How many files/directories to copy per batch
          */
-        protected $tag = __CLASS__;
+        const FILES_PER_BATCH = 10;
+
+        /**
+         * How many database rows to dump per batch
+         */
+        const ROWS_PER_BATCH = 100;
+
+        /**
+         * How many files/directories to archive per batch
+         */
+        const ZIP_PER_BATCH = 10;
 
         /**
          * User friendly name used to identify the plugin
-         * @var string
          */
-        protected $name = 'Cambrian Explosion';
+        const NAME = 'Cambrian Explosion';
 
         /**
          * Current version of the plugin
-         * @var string
          */
-        protected $version = '0.2.0';
+        const VERSION = '0.3.0-alpha';
 
         /**
-         * Show debug output
-         * @var boolean
+         * Whether to produce debugging output
          */
-        protected $debug = false;
-
-        /**
-         * Number of rows to generate per bulk insert
-         * @var int
-         */
-        protected $bulk_insert = 100;
+        const DEBUG = false;
 
         /**
          * Full path to wp-content directory, no trailing slash
          * @var string
          */
         protected $content_dir = WP_CONTENT_DIR;
-
-        /**
-         * Full path to temporary subdirectory in which to package backup
-         * @var string
-         */
-        protected $tmp_dir;
 
         /**
          * Full path to wordpress document root
@@ -71,6 +65,12 @@ if (!class_exists('cambrian')) {
          * @var array
          */
         protected $manifest = array();
+
+        /**
+         * State saved to file between batches
+         * @var array
+         */
+        protected $state;
 
         /**
          * ZipArchive error strings
@@ -102,9 +102,6 @@ if (!class_exists('cambrian')) {
                 add_action('plugins_loaded', array(&$this, 'downloadBackup'));
             }
 
-            // compute temp dir
-            $this->tmp_dir = sys_get_temp_dir() . DIRECTORY_SEPARATOR . uniqid($this->tag . '-');
-
             // compute base dir + url
             $plugin_dir_path = plugin_dir_path(__FILE__);
             $plugin_dir_url = plugin_dir_url(__FILE__);
@@ -117,11 +114,9 @@ if (!class_exists('cambrian')) {
 
             if (stripos($plugin_dir_path, $plugin_dir_url) !== false) {
                 $this->base_dir = str_replace($plugin_dir_url, '', $plugin_dir_path);
-            }
-            elseif (defined('ABSPATH')) {
+            } elseif (defined('ABSPATH')) {
                 $this->base_dir = rtrim(ABSPATH, DIRECTORY_SEPARATOR);
-            }
-            else {
+            } else {
                 wp_die('Could not determine base path from ' . $plugin_dir_path);
             }
         }
@@ -135,7 +130,7 @@ if (!class_exists('cambrian')) {
                 return;
 
             deactivate_plugins(plugin_basename(__FILE__), true, true);
-            wp_die('This plugin (' . $this->name . ') does not support network wide activation');
+            wp_die('This plugin (' . self::NAME . ') does not support network wide activation');
         }
 
         /**
@@ -145,10 +140,10 @@ if (!class_exists('cambrian')) {
         public function adminMenu() {
             add_submenu_page(
                 'tools.php',
-                $this->name,
-                $this->name,
+                self::NAME,
+                self::NAME,
                 'import',
-                $this->tag . '_opt_menu',
+                __CLASS__ . '_opt_menu',
                 array(&$this, 'showBackupPage')
             );
         }
@@ -159,32 +154,27 @@ if (!class_exists('cambrian')) {
          */
         public function showBackupPage() {
             echo '<div class="wrap">';
-            echo '<h2>' . $this->name . ' v ' . $this->version . '</h2>';
+            echo '<h2>' . self::NAME . ' v ' . self::VERSION . '</h2>';
 
-            if ($archive = $this->doBackup()) {
-                if ($archive !== true) {
-                    $hash = sha1_file($archive);
-                    echo '<form id="' . $this->tag . '_export_form" action="">';
-                    echo '<input type="hidden" name="download_' . $this->tag . '_export" value="' . substr($hash, 0, 7) . '">';
-                    echo '<input type="submit" id="' . $this->tag . '_export_submit" value="Download Archive" class="button button-primary">';
-                    echo '</form>';
-                    echo '<script>';
-                    echo 'document.getElementById("' . $this->tag . '_export_form").submit();';
-                    echo 'var submitButton = document.getElementById("' . $this->tag . '_export_submit");';
-                    echo 'submitButton.style.visibility = "hidden";';
-                    echo 'var submitReplacement = document.createElement("p");';
-                    echo 'submitReplacement.appendChild(document.createTextNode("Starting download..."));';
-                    echo 'submitButton.parentNode.insertBefore(submitReplacement, submitButton);';
-                    echo '</script>';
+            if ($this->getNonce()) {
+                if (isset($_GET['kickoff'])) {
+                    $this->renderRefresh(
+                        $this->initArchiving()
+                    );
+                } elseif (isset($_GET['holding'])) {
+                    $this->renderRefresh(
+                        false,
+                        $this->resumeArchiving()
+                    );
                 }
-            }
-            else {
+            } else {
                 echo '<hr>';
                 echo '<p>When you click the button below, Wordpress will create a zip archive of your content directory (in <code>' . $this->content_dir . '</code>) and a SQL export of your database.</p>';
                 echo '<p>You can then import said archive into an <a target="_blank" href="https://github.com/evolution/wordpress">Evolution Wordpress</a> site.</p>';
-                echo '<form action="" method="post">';
-                wp_nonce_field($this->tag . '-plugin-trigger');
-                echo '<input type="submit" value="Create Archive" class="button button-primary">';
+                echo '<form action="" method="get">';
+                wp_nonce_field(__CLASS__, __CLASS__.'_nonce', true);
+                echo '<input type="hidden" name="page" value="' . __CLASS__ . '_opt_menu">';
+                echo '<input type="submit" name="kickoff" value="Create Archive" class="button button-primary">';
                 echo '</form>';
             }
 
@@ -196,159 +186,142 @@ if (!class_exists('cambrian')) {
          * @access public
          */
         public function downloadBackup() {
-            global $pagenow;
-            if ($pagenow == 'tools.php' && current_user_can('import') && isset($_GET['download_' . $this->tag . '_export'])) {
+            $nonce = $this->getNonce();
 
-                $zipname = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $this->tag . '-backup.zip';
-                $hash    = sha1_file($zipname);
-
-                if (substr($hash, 0, 7) === substr($_GET['download_' . $this->tag . '_export'], 0, 7)) {
+            if ($nonce && isset($_GET['download'])) {
+                $zipfile = $this->tempPath() . '.complete.zip';
+                if (file_exists($zipfile)) {
                     header('Content-Description: File Transfer');
                     header('Content-Type: application/octet-stream');
-                    header('Content-Disposition: attachment; filename=' . $this->tag . '-export-' . substr($hash, 0, 7) . '.zip');
+                    header('Content-Disposition: attachment; filename=' . __CLASS__ . '-export-' . $nonce . '.zip');
                     header('Expires: 0');
                     header('Cache-Control: no-cache');
-                    header('Content-Length: ' . filesize($zipname));
-                    readfile($zipname);
-                    unlink($zipname);
+                    header('Content-Length: ' . filesize($zipfile));
+                    readfile($zipfile);
+                    $this->doCleanup();
                     exit();
-                }
-                else {
-                    wp_die('No export found for key!');
+                } else {
+                    wp_die('No matching cambrian archive found');
                 }
             }
+        }
+
+        /**
+         * Retrieve and verify nonce from query string
+         * @access protected
+         */
+        protected function getNonce() {
+            global $pagenow;
+            if ($pagenow == 'tools.php' && isset($_GET['page']) && $_GET['page'] == __CLASS__ . '_opt_menu') {
+                if (isset($_GET[__CLASS__ . '_nonce'])) {
+                    $nonce = $_GET[__CLASS__ . '_nonce'];
+
+                    if (wp_verify_nonce($nonce, __CLASS__)) {
+                        return $nonce;
+                    }
+                }
+            }
+        }
+
+        /**
+         * Calculate working temp directory given our nonce
+         * @access protected
+         */
+        protected function tempPath() {
+            if ($nonce = $this->getNonce()) {
+                return sys_get_temp_dir() . DIRECTORY_SEPARATOR . $nonce;
+            }
+        }
+
+        /**
+         * Render form refresh (within backup page)
+         * @access protected
+         */
+        protected function renderRefresh($kickoff = false, $download = false) {
+            $this->printLog();
+
+            echo '<form id="' . __CLASS__ . '_holding" action="" method="get">';
+            wp_nonce_field(__CLASS__, __CLASS__.'_nonce', false);
+            echo '<input type="hidden" name="page" value="' . __CLASS__ . '_opt_menu">';
+
+            $action = 'holding';
+            if ($kickoff) {
+                $action = 'kickoff';
+            }
+            if ($download) {
+                $action = 'download';
+            }
+
+            echo '<input type="hidden" name="'.$action.'" value="1">';
+            echo '</form>';
+            echo '<script>';
+            echo 'window.setTimeout(function () { document.getElementById("' . __CLASS__ . '_holding").submit(); }, 5000);';
+            echo '</script>';
         }
 
         /**
          * Initate backup/export process
          * @access protected
          */
-        protected function doBackup() {
-            if (empty($_POST))
-                return false;
+        protected function initArchiving() {
+            global $wp_filesystem;
+            global $wpdb;
 
-            check_admin_referer($this->tag . '-plugin-trigger');
+            check_admin_referer(__CLASS__, __CLASS__.'_nonce');
 
             // request filesystem credentials, as necessary
-            $url = wp_nonce_url('tools.php?page=' . $this->tag . '_opt_menu', $this->tag . '-plugin-trigger');
-            if (false === ($creds = request_filesystem_credentials($url, '', false, false) ) ) {
+            $url = wp_nonce_url('tools.php?page='.__CLASS__.'_opt_menu&kickoff=1', __CLASS__, __CLASS__.'_nonce');
+            if (false === ($creds = request_filesystem_credentials($url, '', false, false))) {
+                $this->writeLog(true, 'Failed first WP_Filesystem condition');
                 return true;
             }
 
             // error and re-prompt when bad filesystem credentials
             if (!WP_Filesystem($creds)) {
                 request_filesystem_credentials($url, '', true, false);
+                $this->writeLog(true, 'Failed second WP_Filesystem condition');
                 return true;
             }
 
-            global $wp_filesystem;
+            $base_offset = stripos($this->base_dir, $wp_filesystem->abspath());
+            $chroot_base_dir = ($base_offset === 0) ? $this->base_dir : rtrim($wp_filesystem->abspath(), DIRECTORY_SEPARATOR);
 
-            $this->addToManifest(array(
+            // todo: create temp directory after our nonce, if it doesnt yet exist
+            $tmp_dir = $this->tempPath();
+
+            // todo: remove directory + log if they exist
+            $this->doCleanup();
+            // sleep(5);
+
+            $this->writeLog('<p>Creating working directory...');
+            ob_start();
+            if (mkdir($tmp_dir, 0777, true)) {
+                $this->writeLog(true, 'Created <code>', $tmp_dir, '</code></p>') || $this->writeLog('Success!</p>');
+            } else {
+                $this->writeLog(ob_get_flush(), '</p>');
+                // print log so far, and avoid rendering refresh page
+                $this->printLog();
+                return true;
+            }
+            ob_end_flush();
+
+            $all_tables   = $wpdb->get_results('SHOW TABLES', ARRAY_N);
+            $blog_tables  = $wpdb->tables('blog');
+            $ms_tables    = $wpdb->tables('ms_global');
+
+            // todo: ensure manifest is written to filesystem early & often, under $tmp/$nonce/manifest.json
+            $this->appendManifest(array(
                 'wpfs_abspath'      => $wp_filesystem->abspath(),
                 'const_abspath'     => ABSPATH,
                 'cambrian_basepath' => $this->base_dir,
+                'chroot_base_dir'   => $chroot_base_dir,
+                'tmp_dir'           => $tmp_dir,
                 'is_multisite'      => is_multisite(),
                 'network_home_url'  => network_home_url(),
                 'home_url'          => home_url(),
                 'network_site_url'  => network_site_url(),
                 'site_url'          => site_url(),
                 'get_plugins'       => get_plugins(),
-            ));
-
-            $base_offset = stripos($this->base_dir, $wp_filesystem->abspath());
-            $this->chroot_base_dir = ($base_offset === 0) ? $this->base_dir : rtrim($wp_filesystem->abspath(), DIRECTORY_SEPARATOR);
-
-            echo '<p>Creating working directory...';
-            if (mkdir($this->tmp_dir, 0777, true))
-                if ($this->debug)
-                    echo 'Created <code>' . $this->tmp_dir . '</code></p>';
-                else
-                    echo 'Success!</p>';
-            else
-                return false;
-
-            echo '<p>Generating SQL dump...<br>';
-            if ($sqlfile = $this->doSql())
-                if ($this->debug)
-                    echo 'Generated <code>' . $sqlfile . '</code></p>';
-                else
-                    echo 'Success!</p>';
-            else
-                return false;
-
-            echo '<p>Copying <code>' . $this->content_dir . '</code>...<br>';
-            $copied_files = 0;
-            $copied_dirs  = 0;
-            foreach ($this->recurse($this->content_dir) as $file) {
-                $destination = preg_replace(
-                    '/^' . preg_quote($this->content_dir, '/') . '([\s\S]*)$/',
-                    $this->tmp_dir . '$1',
-                    $file
-                );
-
-                if (is_dir($file)) {
-                    if(mkdir($destination, 0777, true)) {
-                        $copied_files++;
-                        if ($this->debug)
-                            echo 'Created subdir <code>'.$file.'</code><br>';
-                    } else {
-                        echo 'Failed to replicate directory <code>' . $file . '</code><br>';
-                    }
-                }
-                else {
-                    $content = $wp_filesystem->get_contents($this->chrootify($file));
-                    if (file_put_contents($destination, $content) !== false) {
-                        $copied_dirs++;
-                    } else {
-                        echo 'Failed to copy file <code>' . $file . '</code><br>';
-                    }
-                }
-            }
-
-            echo 'Copied ' . $copied_dirs . ' directories and ' . $copied_files . ' files</p>';
-
-            echo '<p>Generating manifest...<br>';
-            if ($manifestfile = $this->doManifest())
-                if ($this->debug)
-                    echo 'Generated <code>' . $manifestfile . '</code></p>';
-                else
-                    echo 'Success!</p>';
-            else
-                return false;
-
-            // generate archive of temp dir
-            echo '<p>Creating zip archive...<br>';
-            if ($archivefile = $this->doArchive())
-                if ($this->debug)
-                    echo 'Created <code>' . $archivefile . '</code></p>';
-                else
-                    echo 'Success!</p>';
-            else
-                return false;
-
-            // remove temp dir and its contents
-            echo '<p>Cleaning up working directory...</p>';
-            $this->doCleanup($this->tmp_dir);
-
-            return $archivefile;
-        }
-
-        /**
-         * Export SQL dump
-         * @access protected
-         */
-        protected function doSql() {
-            global $wpdb;
-
-            $dumpname = $this->tmp_dir . DIRECTORY_SEPARATOR . 'wordpress.sql';
-            $dumpfile = fopen($dumpname, 'w');
-
-            // get ALL tables, including non wordpress
-            $all_tables   = $wpdb->get_results('SHOW TABLES', ARRAY_N);
-            $blog_tables  = $wpdb->tables('blog');
-            $ms_tables    = $wpdb->tables('ms_global');
-
-            $this->addToManifest(array(
                 'prefix'            => $wpdb->prefix,
                 'base_prefix'       => $wpdb->base_prefix,
                 'blogid'            => $wpdb->blogid,
@@ -360,141 +333,265 @@ if (!class_exists('cambrian')) {
                 'tables[ms_global]' => $ms_tables,
             ));
 
-            foreach ($all_tables as $tablename) {
-                $tablename = array_pop($tablename);
+            // create and save a starting state file
+            $this->newState(
+                $this->recurse($this->content_dir),
+                array_fill_keys(array_map('array_shift', $all_tables), 0)
+            );
 
-                // get raw tablename without prefixes
-                $rawname = preg_replace('/^'.preg_quote($wpdb->base_prefix).'(?:\d+_)?/', '', $tablename);
+            return false;
+        }
 
-                // skip multisite tables
-                if (isset($ms_tables[$rawname])) {
-                    if ($this->debug)
-                        echo 'Skipping multisite table <code>' . $tablename . '</code><br>';
+        /**
+         * Resume backup/export process, after refresh
+         * @access protected
+         */
+        protected function resumeArchiving() {
+            // load manifest + statefile
+            $manifest = $this->loadManifest();
+            $this->loadState();
 
-                    continue;
-                }
+            // start the clock
+            set_time_limit(30);
+            $start = microtime(true);
 
-                // skip blog tables that do not belong to the currently exporting site
-                if (isset($blog_tables[$rawname]) && strpos($tablename, $wpdb->prefix) === FALSE) {
-                    if ($this->debug)
-                        echo 'Skipping extrasite table <code>' . $tablename . '</code><br>';
-
-                    continue;
-                }
-
-                $results = $wpdb->get_row("SHOW CREATE TABLE `{$tablename}`", ARRAY_A);
-
-                if (isset($results['Create Table'])) {
-                    fwrite($dumpfile, "-- Table {$tablename}\n");
-                    fwrite($dumpfile, "DROP TABLE IF EXISTS `{$tablename}`;\n");
-                    fwrite($dumpfile, $results['Create Table'] . ";\n\n");
-
-                    $names     = null;
-                    $row_queue = array( array() );
-
-                    foreach ($wpdb->get_results("SELECT * FROM `{$tablename}`", ARRAY_A) as $row) {
-                        if (!isset($names)) {
-                            $names = '`' . implode('`, `', array_keys($row)) . '`';
-                        }
-
-                        $queue_index = count($row_queue) - 1;
-
-                        if (count($row_queue[$queue_index]) >= $this->bulk_insert) {
-                            $row_queue[] = array();
-                            $queue_index = count($row_queue) - 1;
-                        }
-
-                        $row_queue[$queue_index][] = '(\'' . implode('\', \'', $wpdb->_escape(array_values($row))) . '\')';
+            switch ($this->state['step']) {
+                case 'files':
+                    while (count($this->state['files']) && (microtime(true) - $start) < 20) {
+                        $this->doFiles(array_splice($this->state['files'], 0, self::FILES_PER_BATCH));
                     }
+                    // increment step as necessary, save state, and return
+                    if (!count($this->state['files'])) {
+                        $this->state['step'] = 'tables';
+                    }
+                    $this->saveState();
+                    return;
+                case 'tables':
+                    while (count($this->state['tables']) && (microtime(true) - $start) < 20) {
+                        // get first key ($table) from array
+                        reset($this->state['tables']);
+                        $table = key($this->state['tables']);
 
-                    if (!empty($row_queue[count($row_queue) - 1])) {
-                        foreach ($row_queue as $row_set) {
-                            $values = implode(",\n  ", $row_set);
-                            fwrite($dumpfile, "INSERT INTO `{$tablename}`\n  ({$names})\nVALUES\n  {$values};\n\n");
+                        $new_offset = $this->doSql($table, $this->state['tables'][$table]);
+                        if ($new_offset === false) {
+                            unset($this->state['tables'][$table]);
+                        } else {
+                            $this->state['tables'][$table] = $new_offset;
                         }
                     }
-                }
-                else {
-                    echo 'Warning: Could not get CREATE statement for ' . $tablename . '<br>';
+                    // increment step as necessary, save state, and return
+                    if (!count($this->state['tables'])) {
+                        $this->state['step'] = 'archive';
+                    }
+                    $this->saveState();
+                    return;
+                case 'archive':
+                    if ($this->state['archive'] === false) {
+                        $this->state['archive'] = $this->recurse($this->tempPath());
+                    }
+                    while (count($this->state['archive']) && (microtime(true) - $start) < 20) {
+                        $zipname = $this->doArchive(array_splice($this->state['archive'], 0, self::ZIP_PER_BATCH));
+                    }
+                    // increment step as necessary, save state, and return
+                    if (!count($this->state['archive'])) {
+                        $this->state['step'] = 'complete';
+
+                        $zipcomplete = str_replace('.temp.zip', '.complete.zip', $zipname);
+                        ob_start();
+                        if (false === rename($zipname, $zipcomplete)) {
+                            // todo: log an issue renaming the completed zip file
+                            $this->writeLog('<p>Failed to rename archive:', ob_get_flush(), '</p>');
+                        }
+                        ob_end_flush();
+                    }
+                    $this->saveState();
+                    return;
+                case 'complete':
+                    return true;
+            }
+        }
+
+        /**
+         * Batched copy of files/directories
+         * @access protected
+         */
+        protected function doFiles($files) {
+            global $wp_filesystem;
+
+            // request filesystem credentials, as necessary
+            $url = wp_nonce_url('tools.php?page='.__CLASS__.'_opt_menu&kickoff=1', __CLASS__, __CLASS__.'_nonce');
+            if (false === ($creds = request_filesystem_credentials($url, '', false, false))) {
+                $this->writeLog(true, 'Failed third WP_Filesystem condition');
+                return true;
+            }
+
+            // error and re-prompt when bad filesystem credentials
+            if (!WP_Filesystem($creds)) {
+                request_filesystem_credentials($url, '', true, false);
+                $this->writeLog(true, 'Failed fourth WP_Filesystem condition');
+                return true;
+            }
+
+            $copied_files = 0;
+            $copied_dirs  = 0;
+
+            $tmp_dir = $this->tempPath();
+
+            foreach ($files as $file) {
+                $destination = preg_replace(
+                    '/^' . preg_quote($this->content_dir, '/') . '([\s\S]*)$/',
+                    $tmp_dir . '$1',
+                    $file
+                );
+
+                if (is_dir($file)) {
+                    ob_start();
+                    if(mkdir($destination, 0777, true)) {
+                        $copied_files++;
+                        $this->writeLog(true, 'Created subdir <code>', $file, '</code><br>');
+                    } else {
+                        $this->writeLog('Failed to replicate directory', $file, ': <code>', ob_get_flush(), '</code><br>');
+                    }
+                    ob_end_clean();
+                } else {
+                    $content = $wp_filesystem->get_contents($this->chrootify($file));
+                    if (file_put_contents($destination, $content) !== false) {
+                        $copied_dirs++;
+                    } else {
+                        $this->writeLog('Failed to copy file <code>', $file, '</code><br>');
+                    }
                 }
             }
 
-            fclose($dumpfile);
-
-            return $dumpname;
+            $this->writeLog('Copied', $copied_dirs, 'directories and', $copied_files, 'files</p>');
         }
 
         /**
-         * Export manifest of various wordpress runtime values
+         * Batched dump of SQL tables
          * @access protected
          */
-        protected function doManifest() {
-            $filename = $this->tmp_dir . DIRECTORY_SEPARATOR . $this->tag . '-manifest.json';
+        protected function doSql($tablename, $offset) {
+            global $wpdb;
 
-            if(false === file_put_contents($filename, json_encode($this->manifest)))
-                echo 'Failed to generate manifest <code>' . $filename . '</code></p>';
-            else
-                return $filename;
+            $dumpname = $this->tempPath() . DIRECTORY_SEPARATOR . 'wordpress.sql';
+            $rawname  = preg_replace('/^'.preg_quote($wpdb->base_prefix).'(?:\d+_)?/', '', $tablename);
+
+            // skip multisite tables
+            if (isset($this->manifest['tables[ms_global]'][$rawname])) {
+                $this->writeLog(true, 'Skipping multisite table <code>', $tablename, '</code><br>');
+
+                return false;
+            }
+
+            // skip blog tables that do not belong to the currently exporting site
+            if (isset($this->manifest['tables[blog]'][$rawname]) && strpos($tablename, $wpdb->prefix) === FALSE) {
+                $this->writeLog(true, 'Skipping extrasite table <code>', $tablename, '</code><br>');
+
+                return false;
+            }
+
+            // if starting off this table, generate crreate statements
+            if ($offset === 0) {
+                $results = $wpdb->get_row("SHOW CREATE TABLE `{$tablename}`", ARRAY_A);
+                if (isset($results['Create Table'])) {
+                    $create = array(
+                        "-- Table {$tablename}",
+                        "DROP TABLE IF EXISTS `{$tablename}`;",
+                        "{$results['Create Table']};\n\n",
+                    );
+                    file_put_contents($dumpname, implode("\n", $create), FILE_APPEND|LOCK_EX);
+                } else {
+                    $this->writeLog('Warning: Could not get CREATE statement for', $tablename, '<br>');
+                }
+            }
+
+            $names     = null;
+            $row_queue = array();
+
+            foreach ($wpdb->get_results("SELECT * FROM `{$tablename}` LIMIT {$offset}, ".self::ROWS_PER_BATCH, ARRAY_A) as $row) {
+                if (!isset($names)) {
+                    $names = '`' . implode('`, `', array_keys($row)) . '`';
+                }
+
+                $row_queue[] = '(\'' . implode('\', \'', $wpdb->_escape(array_values($row))) . '\')';
+            }
+
+            if (!empty($row_queue)) {
+                $insert = "INSERT INTO `{$tablename}`\n  ({$names})\nVALUES\n  " . implode(",\n  ", $row_queue) . ";\n\n";
+                file_put_contents($dumpname, $insert, FILE_APPEND|LOCK_EX);
+
+                $this->writeLog(true, '<p>Dumped', count($row_queue), 'rows from', $tablename, '</p>');
+
+                return $offset + self::ROWS_PER_BATCH;
+            }
+
+            return false;
         }
 
         /**
-         * Package working directory into zip archive
+         * Batched archiving of files/directories
          * @access protected
          */
-        protected function doArchive() {
-            $zipname = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $this->tag . '-backup.zip';
+        protected function doArchive($items) {
+            $tmp_dir = $this->tempPath();
+            $zipname = $tmp_dir . '.temp.zip';
 
             if (class_exists('ZipArchive')) {
                 $zip = new ZipArchive();
-                $res = $zip->open($zipname, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+                if (file_exists($zipname)) {
+                    $res = $zip->open($zipname);
+                } else {
+                    $res = $zip->open($zipname, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+                }
 
                 if ($res !== true) {
                     foreach ($this->zip_errors as $const => $message) {
                         if (constant('ZipArchive::'.$const) === $res) {
-                            echo '<code>ZipArchive::open()</code> failure: ' . $this->zip_errors[$const] . '<br>';
+                            $this->writeLog('<code>ZipArchive::open()</code> failure:', $this->zip_errors[$const], '<br>');
                             return;
                         }
                     }
                 }
-            }
-            else {
+            } else {
                 include_once(dirname(__FILE__) . DIRECTORY_SEPARATOR . '_inc' . DIRECTORY_SEPARATOR . 'class.Splitbrain_Zip.php');
                 $zip = new Splitbrain_Zip();
-                $zip->create($zipname);
+
+                if (file_exists($zipname)) {
+                    $zip->open($zipname);
+                } else {
+                    $zip->create($zipname);
+                }
             }
 
             $plugin_pattern = $this->findInactivePlugins();
 
-            $basepath = $this->tmp_dir . DIRECTORY_SEPARATOR;
+            $basepath = $tmp_dir . DIRECTORY_SEPARATOR;
 
-            foreach($this->recurse($basepath) as $file){
+            foreach($items as $file){
                 $localname = preg_replace('/^' . preg_quote($basepath, '/') . '/', '', $file);
 
                 if (preg_match($plugin_pattern, $localname)) {
                     continue;
                 }
 
-                if ($this->debug)
-                    echo 'Zipping <code>' . $file . '</code> as <code>' . $localname . '</code><br>';
+                $this->writeLog(true, 'Zipping <code>', $file, '</code> as <code>', $localname, '</code><br>');
 
                 if (is_dir($file)) {
                     if (class_exists('ZipArchive')) {
                         if (!$zip->addEmptyDir($localname)) {
-                            echo '<code>ZipArchive::addEmptyDir()</code> failure for ' . $file . '<br>';
+                            $this->writeLog('<code>ZipArchive::addEmptyDir()</code> failure for', $file, '<br>');
                         }
                     }
-                }
-                else {
+                } else {
                     if (class_exists('ZipArchive')) {
                         if (!$zip->addFile($file, $localname)) {
-                            echo '<code>ZipArchive::addFile()</code> failure for ' . $file . '<br>';
+                            $this->writeLog('<code>ZipArchive::addFile()</code> failure for', $file, '<br>');
                         }
-                    }
-                    else {
+                    } else {
                         try {
                             $zip->addFile($file, $localname);
                         } catch (Exception $e) {
-                            echo '<code>Splitbrain_Zip::addFile()</code> failure: <code>' . $e . '</code><br>';
+                            $this->writeLog('<code>Splitbrain_Zip::addFile()</code> failure: <code>', $e, '</code><br>');
                         }
                     }
                 }
@@ -506,39 +603,148 @@ if (!class_exists('cambrian')) {
         }
 
         /**
-         * Clean and remove working directory
+         * Clean and remove working files/directories
          * @access protected
          */
-        protected function doCleanup($base) {
+        protected function doCleanup() {
+            $base = $this->tempPath();
             $dirs = array($base);
 
-            foreach ($this->recurse($base) as $file) {
-                if (is_dir($file)) {
-                    $dirs[] = $file;
+            if (is_dir($base)) {
+                foreach ($this->recurse($base) as $file) {
+                    if (is_dir($file)) {
+                        $dirs[] = $file;
+                    } else {
+                        unlink($file);
+                    }
                 }
-                else {
-                    unlink($file);
+
+                foreach (array_reverse($dirs) as $path) {
+                    rmdir($path);
                 }
             }
 
-            foreach (array_reverse($dirs) as $path) {
-                rmdir($path);
+            foreach (array('-progress.log', '-state.bin', '.complete.zip') as $extra_file) {
+                if (is_file($base.$extra_file)) {
+                    unlink($base.$extra_file);
+                }
             }
         }
 
         /**
-         * Add array of values to manifest
-         * @access private
+         * Print batch log
+         * @access protected
          */
-        private function addToManifest($values) {
+        protected function printLog() {
+            $filename = $this->tempPath() . '-progress.log';
+
+            echo '<p>Archiving in progress! <b>Do not navigate away from this page</b></p><blockquote>';
+            echo file_get_contents($filename);
+            echo '</blockquote>';
+        }
+
+        /**
+         * Append to batch log
+         * @access protected
+         */
+        protected function writeLog() {
+            $messages = func_get_args();
+
+            if ($messages[0] === true) {
+                array_shift($messages);
+
+                if (!self::DEBUG) {
+                    return false;
+                }
+            }
+
+            // append output to file (with exclusive lock)
+            $filename = $this->tempPath() . '-progress.log';
+            if (false === file_put_contents($filename , implode(' ', $messages), FILE_APPEND|LOCK_EX)) {
+                echo '<p>Failed appending to log '.$filename.'</p>';
+            }
+
+            return true;
+        }
+
+        /**
+         * Load manifest from file
+         * @access protected
+         */
+        protected function loadManifest() {
+            $filename = $this->tempPath() . DIRECTORY_SEPARATOR . __CLASS__ . '-manifest.json';
+
+            // read in existing manifest, if exists
+            if (is_readable($filename)) {
+                $this->manifest = json_decode(file_get_contents($filename), true);
+            }
+
+            return $this->manifest;
+        }
+
+        /**
+         * Append array of new values to manifest file
+         * @access protected
+         */
+        protected function appendManifest($values) {
+            // todo: should we open an exclusive lock here?
+            $filename = $this->tempPath() . DIRECTORY_SEPARATOR . __CLASS__ . '-manifest.json';
+
+            // merge with new values
             $this->manifest = array_merge($this->manifest, $values);
+
+            // write updated manifest
+            $this->writeLog('<p>Writing manifest...<br>');
+            ob_start();
+            if(false === file_put_contents($filename, json_encode($this->manifest))) {
+                $this->writeLog('Failed to write manifest <code>' . $filename . '</code>: ' . ob_get_flush() . '</p>');
+            } else {
+                $this->writeLog(true, 'Generated <code>', $filename, '</code></p>') || $this->writeLog('Success!</p>');
+            }
+            ob_end_flush();
+        }
+
+        /**
+         * Create new state
+         * @access protected
+         */
+        protected function newState($files = array(), $tables = array()) {
+            $this->state = array(
+                'step' => 'files',
+                'files' => $files,
+                'tables' => $tables,
+                'archive' => false,
+            );
+            $this->saveState();
+
+            return $this->state;
+        }
+
+        /**
+         * Load existing state from file
+         * @access protected
+         */
+        protected function loadState() {
+            $filename = $this->tempPath() . '-state.bin';
+            $this->state = unserialize(file_get_contents($filename));
+
+            return $this->state;
+        }
+
+        /**
+         * Save existing state to file
+         * @access protected
+         */
+        protected function saveState() {
+            $filename = $this->tempPath() . '-state.bin';
+            return file_put_contents($filename, serialize($this->state));
         }
 
         /**
          * Construct pattern to match inactive plugins
-         * @access private
+         * @access protected
          */
-        private function findInactivePlugins() {
+        protected function findInactivePlugins() {
             // skip exporting ourself, for obvious reasons
             $inactive_plugins = array('cambrian');
 
@@ -548,7 +754,7 @@ if (!class_exists('cambrian')) {
                 if (!is_plugin_active($plugin_name) && !is_plugin_active_for_network($plugin_name)) {
                     $inactive_plugins[] = preg_quote($base, '/');
 
-                    if ($this->debug)
+                    if (self::DEBUG)
                         echo 'Skipping inactive plugin <code>' . $base . '</code><br>';
                 }
             }
@@ -560,22 +766,21 @@ if (!class_exists('cambrian')) {
 
         /**
          * Transform path to use chrooted base path
-         * @access private
+         * @access protected
          */
-        private function chrootify($path) {
-            if ($this->base_dir === $this->chroot_base_dir) {
+        protected function chrootify($path) {
+            if ($this->base_dir === $this->manifest['chroot_base_dir']) {
                 return $path;
-            }
-            else {
-                return str_replace($this->base_dir, $this->chroot_base_dir, $path);
+            } else {
+                return str_replace($this->base_dir, $this->manifest['chroot_base_dir'], $path);
             }
         }
 
         /**
          * Recurse path, returning all files and directories
-         * @access private
+         * @access protected
          */
-        private function recurse($path) {
+        protected function recurse($path) {
             if (class_exists('FilesystemIterator')) {
                 $files = new RecursiveIteratorIterator(
                     new RecursiveDirectoryIterator($path, FilesystemIterator::SKIP_DOTS),
@@ -583,17 +788,16 @@ if (!class_exists('cambrian')) {
                 );
 
                 return array_keys(iterator_to_array($files));
-            }
-            else {
+            } else {
                 return $this->_recurse($path);
             }
         }
 
         /**
          * Recurse folders for < 5.3
-         * @access private
+         * @access protected
          */
-        private function _recurse($folder = '', $levels = 100) {
+        protected function _recurse($folder = '', $levels = 100) {
             if (empty($folder))
                 return false;
 
@@ -610,8 +814,7 @@ if (!class_exists('cambrian')) {
                         $files2 = $this->_recurse($folder . DIRECTORY_SEPARATOR . $file, $levels - 1);
                         if ($files2)
                             $files = array_merge($files, $files2);
-                    }
-                    else {
+                    } else {
                         $files[] = $folder . DIRECTORY_SEPARATOR . $file;
                     }
                 }
