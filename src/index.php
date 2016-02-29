@@ -211,11 +211,14 @@ if (!class_exists('cambrian')) {
             if ($nonce && isset($_GET['download'])) {
                 $zipfile = $this->tempPath() . self::ZIPCOMP_STUB;
                 if (file_exists($zipfile)) {
+                    $this->loadManifest();
+
                     $filename = array(
                         __CLASS__,
                         $nonce,
                         preg_replace('/(?:https?)?[^a-z0-9]+/i', '-', $this->manifest['home_url']),
                     );
+
                     header('Content-Description: File Transfer');
                     header('Content-Type: application/octet-stream');
                     header('Content-Disposition: attachment; filename=' . implode('-', $filename) . '.zip');
@@ -371,7 +374,7 @@ if (!class_exists('cambrian')) {
          */
         protected function resumeArchiving() {
             // load manifest + statefile
-            $manifest = $this->loadManifest();
+            $this->loadManifest();
             $this->loadState();
 
             // start the clock
@@ -380,16 +383,25 @@ if (!class_exists('cambrian')) {
 
             switch ($this->state['step']) {
                 case 'files':
+                    $start_count = count($this->state['files']);
+
                     while (count($this->state['files']) && (microtime(true) - $start) < 20) {
                         $this->doFiles(array_splice($this->state['files'], 0, self::FILES_PER_BATCH));
                     }
+
                     // increment step as necessary, save state, and return
                     if (!count($this->state['files'])) {
                         $this->state['step'] = 'tables';
                     }
                     $this->saveState();
+
+                    $end_count = $start_count - count($this->state['files']);
+                    $this->writeLog('<p>Processed', $end_count, 'directories/files</p>');
+
                     return;
                 case 'tables':
+                    $start_count = count($this->state['tables']);
+
                     while (count($this->state['tables']) && (microtime(true) - $start) < 20) {
                         // get first key ($table) from array
                         reset($this->state['tables']);
@@ -402,19 +414,28 @@ if (!class_exists('cambrian')) {
                             $this->state['tables'][$table] = $new_offset;
                         }
                     }
+
                     // increment step as necessary, save state, and return
                     if (!count($this->state['tables'])) {
                         $this->state['step'] = 'archive';
                     }
                     $this->saveState();
+
+                    $end_count = $start_count - count($this->state['tables']);
+                    $this->writeLog('<p>Processed', $end_count, 'database tables</p>');
+
                     return;
                 case 'archive':
                     if ($this->state['archive'] === false) {
                         $this->state['archive'] = $this->recurse($this->tempPath());
                     }
+
+                    $start_count = count($this->state['archive']);
+
                     while (count($this->state['archive']) && (microtime(true) - $start) < 20) {
                         $zipname = $this->doArchive(array_splice($this->state['archive'], 0, self::ZIP_PER_BATCH));
                     }
+
                     // increment step as necessary, save state, and return
                     if (!count($this->state['archive'])) {
                         $this->state['step'] = 'complete';
@@ -428,6 +449,10 @@ if (!class_exists('cambrian')) {
                         ob_end_flush();
                     }
                     $this->saveState();
+
+                    $end_count = $start_count - count($this->state['archive']);
+                    $this->writeLog('<p>Archived', $end_count, 'directories/files</p>');
+
                     return;
                 case 'complete':
                     return true;
@@ -486,7 +511,7 @@ if (!class_exists('cambrian')) {
                 }
             }
 
-            $this->writeLog('<p>Copied', $copied_dirs, 'directories and', $copied_files, 'files</p>');
+            $this->writeLog(true, '<p>Copied', $copied_dirs, 'directories and', $copied_files, 'files</p>');
         }
 
         /**
@@ -543,7 +568,7 @@ if (!class_exists('cambrian')) {
                 $insert = "INSERT INTO `{$tablename}`\n  ({$names})\nVALUES\n  " . implode(",\n  ", $row_queue) . ";\n\n";
                 file_put_contents($dumpname, $insert, FILE_APPEND|LOCK_EX);
 
-                $this->writeLog('<p>Dumped', count($row_queue), 'rows from', $tablename, '</p>');
+                $this->writeLog(true, '<p>Dumped', count($row_queue), 'rows from', $tablename, '</p>');
 
                 return $offset + self::ROWS_PER_BATCH;
             }
@@ -629,7 +654,7 @@ if (!class_exists('cambrian')) {
 
             $zip->close();
 
-            $this->writeLog('<p>Archived', $archived_dirs, 'directories and', $archived_files, 'files</p>');
+            $this->writeLog(true, '<p>Archived', $archived_dirs, 'directories and', $archived_files, 'files</p>');
 
             return $zipname;
         }
