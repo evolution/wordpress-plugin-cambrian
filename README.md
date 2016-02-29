@@ -1,4 +1,4 @@
-# Cambrian Explosion v0.2.0
+# Cambrian Explosion v0.3.0
 > Jumpstart the evolution of your Wordpress sites!
 
 ## What is it?
