@@ -34,6 +34,26 @@ if (!class_exists('cambrian')) {
         const ZIP_PER_BATCH = 10;
 
         /**
+         * Logfile name
+         */
+        const LOGFILE_STUB = '-progress.log';
+
+        /**
+         * Statefile name
+         */
+        const STATEFILE_STUB = '-state.bin';
+
+        /**
+         * In-progress archive name
+         */
+        const ZIPTEMP_STUB = '.temp.zip';
+
+        /**
+         * Completed archive name
+         */
+        const ZIPCOMP_STUB = '.complete.zip';
+
+        /**
          * User friendly name used to identify the plugin
          */
         const NAME = 'Cambrian Explosion';
@@ -189,11 +209,16 @@ if (!class_exists('cambrian')) {
             $nonce = $this->getNonce();
 
             if ($nonce && isset($_GET['download'])) {
-                $zipfile = $this->tempPath() . '.complete.zip';
+                $zipfile = $this->tempPath() . self::ZIPCOMP_STUB;
                 if (file_exists($zipfile)) {
+                    $filename = array(
+                        __CLASS__,
+                        $nonce,
+                        preg_replace('/(?:https?)?[^a-z0-9]+/i', '-', $this->manifest['home_url']),
+                    );
                     header('Content-Description: File Transfer');
                     header('Content-Type: application/octet-stream');
-                    header('Content-Disposition: attachment; filename=' . __CLASS__ . '-export-' . $nonce . '.zip');
+                    header('Content-Disposition: attachment; filename=' . implode('-', $filename) . '.zip');
                     header('Expires: 0');
                     header('Cache-Control: no-cache');
                     header('Content-Length: ' . filesize($zipfile));
@@ -272,14 +297,14 @@ if (!class_exists('cambrian')) {
             // request filesystem credentials, as necessary
             $url = wp_nonce_url('tools.php?page='.__CLASS__.'_opt_menu&kickoff=1', __CLASS__, __CLASS__.'_nonce');
             if (false === ($creds = request_filesystem_credentials($url, '', false, false))) {
-                $this->writeLog(true, 'Failed first WP_Filesystem condition');
+                $this->writeLog(true, '<p><b>Failed first WP_Filesystem condition</b></p>');
                 return true;
             }
 
             // error and re-prompt when bad filesystem credentials
             if (!WP_Filesystem($creds)) {
                 request_filesystem_credentials($url, '', true, false);
-                $this->writeLog(true, 'Failed second WP_Filesystem condition');
+                $this->writeLog(true, '<p><b>Failed second WP_Filesystem condition</b></p>');
                 return true;
             }
 
@@ -299,8 +324,6 @@ if (!class_exists('cambrian')) {
                 $this->writeLog(true, 'Created <code>', $tmp_dir, '</code></p>') || $this->writeLog('Success!</p>');
             } else {
                 $this->writeLog(ob_get_flush(), '</p>');
-                // print log so far, and avoid rendering refresh page
-                $this->printLog();
                 return true;
             }
             ob_end_flush();
@@ -396,7 +419,7 @@ if (!class_exists('cambrian')) {
                     if (!count($this->state['archive'])) {
                         $this->state['step'] = 'complete';
 
-                        $zipcomplete = str_replace('.temp.zip', '.complete.zip', $zipname);
+                        $zipcomplete = str_replace(self::ZIPTEMP_STUB, self::ZIPCOMP_STUB, $zipname);
                         ob_start();
                         if (false === rename($zipname, $zipcomplete)) {
                             // todo: log an issue renaming the completed zip file
@@ -421,14 +444,14 @@ if (!class_exists('cambrian')) {
             // request filesystem credentials, as necessary
             $url = wp_nonce_url('tools.php?page='.__CLASS__.'_opt_menu&kickoff=1', __CLASS__, __CLASS__.'_nonce');
             if (false === ($creds = request_filesystem_credentials($url, '', false, false))) {
-                $this->writeLog(true, 'Failed third WP_Filesystem condition');
+                $this->writeLog(true, '<p><b>Failed third WP_Filesystem condition</b></p>');
                 return true;
             }
 
             // error and re-prompt when bad filesystem credentials
             if (!WP_Filesystem($creds)) {
                 request_filesystem_credentials($url, '', true, false);
-                $this->writeLog(true, 'Failed fourth WP_Filesystem condition');
+                $this->writeLog(true, '<p><b>Failed fourth WP_Filesystem condition</b></p>');
                 return true;
             }
 
@@ -463,7 +486,7 @@ if (!class_exists('cambrian')) {
                 }
             }
 
-            $this->writeLog('Copied', $copied_dirs, 'directories and', $copied_files, 'files</p>');
+            $this->writeLog('<p>Copied', $copied_dirs, 'directories and', $copied_files, 'files</p>');
         }
 
         /**
@@ -520,7 +543,7 @@ if (!class_exists('cambrian')) {
                 $insert = "INSERT INTO `{$tablename}`\n  ({$names})\nVALUES\n  " . implode(",\n  ", $row_queue) . ";\n\n";
                 file_put_contents($dumpname, $insert, FILE_APPEND|LOCK_EX);
 
-                $this->writeLog(true, '<p>Dumped', count($row_queue), 'rows from', $tablename, '</p>');
+                $this->writeLog('<p>Dumped', count($row_queue), 'rows from', $tablename, '</p>');
 
                 return $offset + self::ROWS_PER_BATCH;
             }
@@ -534,7 +557,7 @@ if (!class_exists('cambrian')) {
          */
         protected function doArchive($items) {
             $tmp_dir = $this->tempPath();
-            $zipname = $tmp_dir . '.temp.zip';
+            $zipname = $tmp_dir . self::ZIPTEMP_STUB;
 
             if (class_exists('ZipArchive')) {
                 $zip = new ZipArchive();
@@ -564,8 +587,10 @@ if (!class_exists('cambrian')) {
             }
 
             $plugin_pattern = $this->findInactivePlugins();
-
             $basepath = $tmp_dir . DIRECTORY_SEPARATOR;
+
+            $archived_files = 0;
+            $archived_dirs  = 0;
 
             foreach($items as $file){
                 $localname = preg_replace('/^' . preg_quote($basepath, '/') . '/', '', $file);
@@ -580,16 +605,21 @@ if (!class_exists('cambrian')) {
                     if (class_exists('ZipArchive')) {
                         if (!$zip->addEmptyDir($localname)) {
                             $this->writeLog('<code>ZipArchive::addEmptyDir()</code> failure for', $file, '<br>');
+                        } else {
+                            $archived_dirs++;
                         }
                     }
                 } else {
                     if (class_exists('ZipArchive')) {
                         if (!$zip->addFile($file, $localname)) {
                             $this->writeLog('<code>ZipArchive::addFile()</code> failure for', $file, '<br>');
+                        } else {
+                            $archived_files++;
                         }
                     } else {
                         try {
                             $zip->addFile($file, $localname);
+                            $archived_files++;
                         } catch (Exception $e) {
                             $this->writeLog('<code>Splitbrain_Zip::addFile()</code> failure: <code>', $e, '</code><br>');
                         }
@@ -598,6 +628,8 @@ if (!class_exists('cambrian')) {
             }
 
             $zip->close();
+
+            $this->writeLog('<p>Archived', $archived_dirs, 'directories and', $archived_files, 'files</p>');
 
             return $zipname;
         }
@@ -624,7 +656,7 @@ if (!class_exists('cambrian')) {
                 }
             }
 
-            foreach (array('-progress.log', '-state.bin', '.complete.zip') as $extra_file) {
+            foreach (array(self::LOGFILE_STUB, self::STATEFILE_STUB, self::ZIPTEMP_STUB, self::ZIPCOMP_STUB) as $extra_file) {
                 if (is_file($base.$extra_file)) {
                     unlink($base.$extra_file);
                 }
@@ -636,7 +668,7 @@ if (!class_exists('cambrian')) {
          * @access protected
          */
         protected function printLog() {
-            $filename = $this->tempPath() . '-progress.log';
+            $filename = $this->tempPath() . self::LOGFILE_STUB;
 
             echo '<p>Archiving in progress! <b>Do not navigate away from this page</b></p><blockquote>';
             echo file_get_contents($filename);
@@ -659,7 +691,7 @@ if (!class_exists('cambrian')) {
             }
 
             // append output to file (with exclusive lock)
-            $filename = $this->tempPath() . '-progress.log';
+            $filename = $this->tempPath() . self::LOGFILE_STUB;
             if (false === file_put_contents($filename , implode(' ', $messages), FILE_APPEND|LOCK_EX)) {
                 echo '<p>Failed appending to log '.$filename.'</p>';
             }
@@ -725,7 +757,7 @@ if (!class_exists('cambrian')) {
          * @access protected
          */
         protected function loadState() {
-            $filename = $this->tempPath() . '-state.bin';
+            $filename = $this->tempPath() . self::STATEFILE_STUB;
             $this->state = unserialize(file_get_contents($filename));
 
             return $this->state;
@@ -736,7 +768,7 @@ if (!class_exists('cambrian')) {
          * @access protected
          */
         protected function saveState() {
-            $filename = $this->tempPath() . '-state.bin';
+            $filename = $this->tempPath() . self::STATEFILE_STUB;
             return file_put_contents($filename, serialize($this->state));
         }
 
