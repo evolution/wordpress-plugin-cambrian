@@ -1,7 +1,7 @@
 === Cambrian Explosion ===
 Tags: export, backup, evolutionwordpress
 Requires at least: 3.0
-Tested up to: 4.2.2
+Tested up to: 4.4.2
 License: MIT
 
 Export the file and database contents of an existing wordpress installation, to be later imported into an Evolution Wordpress site
@@ -24,6 +24,10 @@ The archive can then be imported into a site generated with [Evolution Wordpress
 1. Look under the 'Tools' admin menu for a 'Cambrian Explosion' item
 
 == Changelog ==
+
+= 0.3.0 =
+* Batch archiving between page reloads
+* Polished non/debug output and generated zip name
 
 = 0.2.0 =
 * First stable release
