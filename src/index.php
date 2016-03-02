@@ -4,7 +4,7 @@
 Plugin Name: Cambrian
 Plugin URI: https://github.com/evolution/wordpress-plugin-cambrian
 Description: Backup and export for Wordpress Evolution
-Version: 0.3.0
+Version: 0.3.1
 Author: Evan Kaufman
 Author URI: https://github.com/EvanK
 License: MIT
@@ -31,7 +31,22 @@ if (!class_exists('cambrian')) {
         /**
          * How many files/directories to archive per batch
          */
-        const ZIP_PER_BATCH = 10;
+        const ZIP_PER_BATCH = 20;
+
+        /**
+         * Limit open filehandles/tempfiles for archive in-progress
+         */
+        const ZIP_ULIMIT = 255;
+
+        /**
+         * How long to extend max_execution_time during batch processing
+         */
+        const EXTENDED_EXEC_TIME = 40;
+
+        /**
+         * How late to allow another iteration during each batch
+         */
+        const WRAP_EXEC_TIME = 30;
 
         /**
          * Logfile name
@@ -91,6 +106,16 @@ if (!class_exists('cambrian')) {
          * @var array
          */
         protected $state;
+
+        /**
+         * @var ZipArchive|Splitbrain_Zip
+         */
+        protected $zip;
+
+        /**
+         * @var int
+         */
+        protected $zip_ulimit;
 
         /**
          * ZipArchive error strings
@@ -378,14 +403,16 @@ if (!class_exists('cambrian')) {
             $this->loadState();
 
             // start the clock
-            set_time_limit(30);
+            set_time_limit(self::EXTENDED_EXEC_TIME);
             $start = microtime(true);
 
             switch ($this->state['step']) {
                 case 'files':
                     $start_count = count($this->state['files']);
 
-                    while (count($this->state['files']) && (microtime(true) - $start) < 20) {
+                    $this->printProgress('Copying files', $start_count, $this->state['files_t']);
+
+                    while (count($this->state['files']) && (microtime(true) - $start) < self::WRAP_EXEC_TIME) {
                         $this->doFiles(array_splice($this->state['files'], 0, self::FILES_PER_BATCH));
                     }
 
@@ -402,7 +429,9 @@ if (!class_exists('cambrian')) {
                 case 'tables':
                     $start_count = count($this->state['tables']);
 
-                    while (count($this->state['tables']) && (microtime(true) - $start) < 20) {
+                    $this->printProgress('Exporting tables', $start_count, $this->state['tables_t']);
+
+                    while (count($this->state['tables']) && (microtime(true) - $start) < self::WRAP_EXEC_TIME) {
                         // get first key ($table) from array
                         reset($this->state['tables']);
                         $table = key($this->state['tables']);
@@ -428,17 +457,23 @@ if (!class_exists('cambrian')) {
                 case 'archive':
                     if ($this->state['archive'] === false) {
                         $this->state['archive'] = $this->recurse($this->tempPath());
+                        $this->state['archive_t'] = count($this->state['archive']);
                     }
 
                     $start_count = count($this->state['archive']);
 
-                    while (count($this->state['archive']) && (microtime(true) - $start) < 20) {
-                        $zipname = $this->doArchive(array_splice($this->state['archive'], 0, self::ZIP_PER_BATCH));
+                    $this->printProgress('Archiving files', $start_count, $this->state['archive_t']);
+
+                    $zipname = $this->openArchive();
+                    while (count($this->state['archive']) && (microtime(true) - $start) < self::WRAP_EXEC_TIME) {
+                        $this->doArchive(array_splice($this->state['archive'], 0, self::ZIP_PER_BATCH));
                     }
+                    $this->closeArchive();
 
                     // increment step as necessary, save state, and return
                     if (!count($this->state['archive'])) {
                         $this->state['step'] = 'complete';
+                        $this->saveState();
 
                         $zipcomplete = str_replace(self::ZIPTEMP_STUB, self::ZIPCOMP_STUB, $zipname);
                         ob_start();
@@ -447,7 +482,11 @@ if (!class_exists('cambrian')) {
                             $this->writeLog('<p>Failed to rename archive:', ob_get_flush(), '</p>');
                         }
                         ob_end_flush();
+
+                        $this->writeLog('<p>Completed archive</p>');
+                        return true;
                     }
+
                     $this->saveState();
 
                     $end_count = $start_count - count($this->state['archive']);
@@ -577,19 +616,19 @@ if (!class_exists('cambrian')) {
         }
 
         /**
-         * Batched archiving of files/directories
+         * Create or open a zip archive
          * @access protected
          */
-        protected function doArchive($items) {
-            $tmp_dir = $this->tempPath();
-            $zipname = $tmp_dir . self::ZIPTEMP_STUB;
+        protected function openArchive() {
+            $zipname = $this->tempPath() . self::ZIPTEMP_STUB;
 
             if (class_exists('ZipArchive')) {
-                $zip = new ZipArchive();
+                $this->writeLog(true, '<p>Archiving with ZipArchive</p>');
+                $this->zip = new ZipArchive();
                 if (file_exists($zipname)) {
-                    $res = $zip->open($zipname);
+                    $res = $this->zip->open($zipname);
                 } else {
-                    $res = $zip->open($zipname, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+                    $res = $this->zip->open($zipname, ZipArchive::CREATE | ZipArchive::OVERWRITE);
                 }
 
                 if ($res !== true) {
@@ -601,21 +640,37 @@ if (!class_exists('cambrian')) {
                     }
                 }
             } else {
+                $this->writeLog(true, '<p>Archiving with Splitbrain_Zip</p>');
                 include_once(dirname(__FILE__) . DIRECTORY_SEPARATOR . '_inc' . DIRECTORY_SEPARATOR . 'class.Splitbrain_Zip.php');
-                $zip = new Splitbrain_Zip();
+                $this->zip = new Splitbrain_Zip();
 
                 if (file_exists($zipname)) {
-                    $zip->open($zipname);
+                    $this->zip->open($zipname);
                 } else {
-                    $zip->create($zipname);
+                    $this->zip->create($zipname);
                 }
             }
 
+            $this->zip_ulimit = 0;
+
+            return $zipname;
+        }
+
+        /**
+         * Batched archiving of files/directories
+         * @access protected
+         */
+        protected function doArchive($items) {
             $plugin_pattern = $this->findInactivePlugins();
-            $basepath = $tmp_dir . DIRECTORY_SEPARATOR;
+            $basepath = $this->tempPath() . DIRECTORY_SEPARATOR;
 
             $archived_files = 0;
             $archived_dirs  = 0;
+
+            if ($this->zip_ulimit > self::ZIP_ULIMIT) {
+                $this->closeArchive();
+                $this->openArchive();
+            }
 
             foreach($items as $file){
                 $localname = preg_replace('/^' . preg_quote($basepath, '/') . '/', '', $file);
@@ -628,22 +683,23 @@ if (!class_exists('cambrian')) {
 
                 if (is_dir($file)) {
                     if (class_exists('ZipArchive')) {
-                        if (!$zip->addEmptyDir($localname)) {
+                        if (!$this->zip->addEmptyDir($localname)) {
                             $this->writeLog('<code>ZipArchive::addEmptyDir()</code> failure for', $file, '<br>');
                         } else {
                             $archived_dirs++;
                         }
                     }
                 } else {
+                    $this->zip_ulimit++;
                     if (class_exists('ZipArchive')) {
-                        if (!$zip->addFile($file, $localname)) {
+                        if (!$this->zip->addFile($file, $localname)) {
                             $this->writeLog('<code>ZipArchive::addFile()</code> failure for', $file, '<br>');
                         } else {
                             $archived_files++;
                         }
                     } else {
                         try {
-                            $zip->addFile($file, $localname);
+                            $this->zip->addFile($file, $localname);
                             $archived_files++;
                         } catch (Exception $e) {
                             $this->writeLog('<code>Splitbrain_Zip::addFile()</code> failure: <code>', $e, '</code><br>');
@@ -652,11 +708,15 @@ if (!class_exists('cambrian')) {
                 }
             }
 
-            $zip->close();
-
             $this->writeLog(true, '<p>Archived', $archived_dirs, 'directories and', $archived_files, 'files</p>');
+        }
 
-            return $zipname;
+        /**
+         * Close an open zip archive
+         * @access protected
+         */
+        protected function closeArchive() {
+            $this->zip->close();
         }
 
         /**
@@ -689,6 +749,16 @@ if (!class_exists('cambrian')) {
         }
 
         /**
+         * Print progress of current batch step
+         */
+        protected function printProgress($action, $current, $total) {
+            $progress = $total - $current;
+            $percent = round(($progress / $total) * 100);
+            echo "<p><b><i>{$action}: {$progress} of {$total} (~{$percent}%)</i></b></p>";
+            flush();
+        }
+
+        /**
          * Print batch log
          * @access protected
          */
@@ -713,6 +783,10 @@ if (!class_exists('cambrian')) {
                 if (!self::DEBUG) {
                     return false;
                 }
+            }
+
+            if (self::DEBUG) {
+              array_unshift($messages, '[' . date('h:i:s') . '] ');
             }
 
             // append output to file (with exclusive lock)
@@ -769,8 +843,11 @@ if (!class_exists('cambrian')) {
             $this->state = array(
                 'step' => 'files',
                 'files' => $files,
+                'files_t' => count($files),
                 'tables' => $tables,
+                'tables_t' => count($tables),
                 'archive' => false,
+                'archive_t' => false,
             );
             $this->saveState();
 
