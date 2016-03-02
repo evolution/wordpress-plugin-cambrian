@@ -25,6 +25,10 @@ The archive can then be imported into a site generated with [Evolution Wordpress
 
 == Changelog ==
 
+= 0.3.1 =
+* Significant performance improvements for zip archiving
+* Rough % progress estimates for each step of export process
+
 = 0.3.0 =
 * Batch archiving between page reloads
 * Polished non/debug output and generated zip name

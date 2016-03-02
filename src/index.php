@@ -76,7 +76,7 @@ if (!class_exists('cambrian')) {
         /**
          * Current version of the plugin
          */
-        const VERSION = '0.3.0';
+        const VERSION = '0.3.1';
 
         /**
          * Whether to produce debugging output
