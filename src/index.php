@@ -390,6 +390,8 @@ if (!class_exists('cambrian')) {
                 array_fill_keys(array_map('array_shift', $all_tables), 0)
             );
 
+            $this->resumeArchiving();
+
             return false;
         }
 
