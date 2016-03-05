@@ -25,6 +25,9 @@ The archive can then be imported into a site generated with [Evolution Wordpress
 
 == Changelog ==
 
+= 0.3.2 =
+* Tweaked support for large zips (above 850MB)
+
 = 0.3.1 =
 * Significant performance improvements for zip archiving
 * Rough % progress estimates for each step of export process
