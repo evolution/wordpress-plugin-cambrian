@@ -21,7 +21,7 @@ if (!class_exists('cambrian')) {
         /**
          * How many files/directories to copy per batch
          */
-        const FILES_PER_BATCH = 10;
+        const FILES_PER_BATCH = 25;
 
         /**
          * How many database rows to dump per batch
@@ -31,7 +31,7 @@ if (!class_exists('cambrian')) {
         /**
          * How many files/directories to archive per batch
          */
-        const ZIP_PER_BATCH = 20;
+        const ZIP_PER_BATCH = 10;
 
         /**
          * Limit open filehandles/tempfiles for archive in-progress
@@ -41,12 +41,12 @@ if (!class_exists('cambrian')) {
         /**
          * How long to extend max_execution_time during batch processing
          */
-        const EXTENDED_EXEC_TIME = 40;
+        const EXTENDED_EXEC_TIME = 45;
 
         /**
          * How late to allow another iteration during each batch
          */
-        const WRAP_EXEC_TIME = 30;
+        const WRAP_EXEC_TIME = 35;
 
         /**
          * Logfile name
@@ -108,11 +108,19 @@ if (!class_exists('cambrian')) {
         protected $state;
 
         /**
+         * Object for adding files to zip archive
          * @var ZipArchive|Splitbrain_Zip
          */
         protected $zip;
 
         /**
+         * Filesize of working zip archive
+         * @var int
+         */
+        protected $zip_size;
+
+        /**
+         * Limit of open files added to zip archive
          * @var int
          */
         protected $zip_ulimit;
@@ -339,12 +347,11 @@ if (!class_exists('cambrian')) {
             $base_offset = stripos($this->base_dir, $wp_filesystem->abspath());
             $chroot_base_dir = ($base_offset === 0) ? $this->base_dir : rtrim($wp_filesystem->abspath(), DIRECTORY_SEPARATOR);
 
-            // todo: create temp directory after our nonce, if it doesnt yet exist
+            // create temp directory after our nonce, if it doesnt yet exist
             $tmp_dir = $this->tempPath();
 
-            // todo: remove directory + log if they exist
+            // remove directory + log if they exist
             $this->doCleanup();
-            // sleep(5);
 
             $this->writeLog('<p>Creating working directory...');
             ob_start();
@@ -468,6 +475,11 @@ if (!class_exists('cambrian')) {
 
                     $zipname = $this->openArchive();
                     while (count($this->state['archive']) && (microtime(true) - $start) < self::WRAP_EXEC_TIME) {
+                        // for zips larger than 850MB, extend execution time to prevent timeouts
+                        if ($this->zip_size > 891289600 && (microtime(true) - $start) > (self::WRAP_EXEC_TIME / 2)) {
+                            set_time_limit(self::WRAP_EXEC_TIME);
+                        }
+
                         $this->doArchive(array_splice($this->state['archive'], 0, self::ZIP_PER_BATCH));
                     }
                     $this->closeArchive();
@@ -623,6 +635,9 @@ if (!class_exists('cambrian')) {
          */
         protected function openArchive() {
             $zipname = $this->tempPath() . self::ZIPTEMP_STUB;
+
+            // get size of $zipname, save to $this->zip_size
+            $this->zip_size = file_exists($zipname) ? filesize($zipname) : 0;
 
             if (class_exists('ZipArchive')) {
                 $this->writeLog(true, '<p>Archiving with ZipArchive</p>');
